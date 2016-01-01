@@ -141,9 +141,9 @@ func main() {
 	//todo: check if target is valid
 
 	//check if disk is specified
-	target := os.Getenv(envTarget)
-	if target == "" {
-		fmt.Fprintf(os.Stderr, "Target VM must be specified with env var %s\n", envTarget)
+	disk := os.Getenv(envTarget)
+	if disk == "" {
+		fmt.Fprintf(os.Stderr, "Target disk must be specified with env var %s\n", envDisk)
 		os.Exit(1)
 	}
 	//todo: check if disk is valid
