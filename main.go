@@ -117,6 +117,23 @@ func exit(err error) {
 	os.Exit(1)
 }
 
+func listAllVM(f *find.Finder, ctx context.Context, path string) []string {
+	out := []string{}
+	items, err := f.ManagedObjectListChildren(ctx, path)
+	if err != nil {
+		exit(err)
+	} //todo: this should return the err
+	for _, item := range items {
+		if item.Object.Reference().Type == "VirtualMachine" {
+			out = append(out, item.Path)
+		}
+		if item.Object.Reference().Type == "Folder" {
+			out = append(out, listAllVM(f, ctx, item.Path)...)
+		}
+	}
+	return out
+
+}
 func main() {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
@@ -155,21 +172,35 @@ func main() {
 	}
 
 	f := find.NewFinder(c.Client, true)
+	//listAllVM(f, ctx, "/datacenter0/vm")
+
+	vs := listAllVM(f, ctx, "/datacenter0/vm")
+	for _, v := range vs {
+		fmt.Printf("%s\n", v)
+	}
+
 	//vms, err := f.VirtualMachine(ctx, "*")
 	//vms, err := f.VirtualMachineList(ctx, "/")
 
-	datacenters := []string{}
-	dss, err := f.ManagedObjectListChildren(ctx, "/")
-	for _, ds := range dss {
-		//fmt.Sprintf("derp %s\n", ds.Path)
-		fmt.Printf("%+v\n", ds)
-		fmt.Printf("%s\n", ds.Path)
-		datacenters = append(datacenters, ds.Path)
-	}
-	//fmt.Printf("%+v\n", dss)
-	fmt.Printf("%+v\n", err)
-	fmt.Printf("%i\n", len(dss))
-	fmt.Printf("%v+\n", datacenters)
+	/*
+		datacenters := []string{}
+		dss, err := f.ManagedObjectListChildren(ctx, "/")
+		for _, ds := range dss {
+			//fmt.Sprintf("derp %s\n", ds.Path)
+			fmt.Printf("%+v\n", ds)
+			fmt.Printf("%s\n", ds.Path)
+			datacenters = append(datacenters, ds.Path)
+		}
+		//fmt.Printf("%+v\n", dss)
+		fmt.Printf("%+v\n", err)
+		fmt.Printf("%i\n", len(dss))
+		fmt.Printf("%v+\n", datacenters)
+
+		vms, err := f.ManagedObjectListChildren(ctx, "/datacenter0/vm")
+		for _, vm := range vms {
+			fmt.Printf("%+v\n", vm)
+		}
+	*/
 	/*
 		for _, vm := range vms {
 			fmt.Sprintf("%s\t", vm.Summary.Name)
