@@ -117,18 +117,22 @@ func exit(err error) {
 	os.Exit(1)
 }
 
-func listAllVM(f *find.Finder, ctx context.Context, path string) []string {
+func findAllObjectsOfType(f *find.Finder, ctx context.Context, path string, findtype string) []string {
 	out := []string{}
 	items, err := f.ManagedObjectListChildren(ctx, path)
 	if err != nil {
 		exit(err)
 	} //todo: this should return the err
 	for _, item := range items {
-		if item.Object.Reference().Type == "VirtualMachine" {
+		//fmt.Printf("%s\n", item.Object.Reference().Type)
+		if item.Object.Reference().Type == findtype {
 			out = append(out, item.Path)
 		}
 		if item.Object.Reference().Type == "Folder" {
-			out = append(out, listAllVM(f, ctx, item.Path)...)
+			out = append(out, findAllObjectsOfType(f, ctx, item.Path, findtype)...)
+		}
+		if item.Object.Reference().Type == "Datacenter" {
+			out = append(out, findAllObjectsOfType(f, ctx, item.Path, findtype)...)
 		}
 	}
 	return out
@@ -174,7 +178,7 @@ func main() {
 	f := find.NewFinder(c.Client, true)
 	//listAllVM(f, ctx, "/datacenter0/vm")
 
-	vs := listAllVM(f, ctx, "/datacenter0/vm")
+	vs := findAllObjectsOfType(f, ctx, "/", "VirtualMachine")
 	for _, v := range vs {
 		fmt.Printf("%s\n", v)
 	}
