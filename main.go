@@ -26,17 +26,146 @@ import (
 	"fmt"
 	"net/url"
 	"os"
+	"reflect"
 	"strings"
 	//"text/tabwriter"
+	"regexp"
 
 	"github.com/vmware/govmomi"
 	"github.com/vmware/govmomi/find"
-	//"github.com/vmware/govmomi/property"
-	//"github.com/vmware/govmomi/units"
-	//"github.com/vmware/govmomi/vim25/mo"
-	//"github.com/vmware/govmomi/vim25/types"
+	"github.com/vmware/govmomi/govc/flags"
+	"github.com/vmware/govmomi/object"
+	"github.com/vmware/govmomi/property"
+	"github.com/vmware/govmomi/vim25"
+	"github.com/vmware/govmomi/vim25/mo"
+	"github.com/vmware/govmomi/vim25/types"
 	"golang.org/x/net/context"
 )
+
+type configSpec types.VirtualMachineConfigSpec
+type vmdk struct {
+	*flags.DatastoreFlag
+	*flags.ResourcePoolFlag
+	*flags.OutputFlag
+
+	upload bool
+	force  bool
+	keep   bool
+
+	Client       *vim25.Client
+	Datacenter   *object.Datacenter
+	Datastore    *object.Datastore
+	ResourcePool *object.ResourcePool
+}
+
+var dsPathRegexp = regexp.MustCompile(`^\[.*\] (.*)$`)
+
+/*
+func init() {
+	cli.Register("import.vmdk", &vmdk{})
+	cli.Alias("import.vmdk", "datastore.import")
+}
+*/
+
+func (c *configSpec) AddChange(d types.BaseVirtualDeviceConfigSpec) {
+	c.DeviceChange = append(c.DeviceChange, d)
+}
+func (c *configSpec) ToSpec() types.VirtualMachineConfigSpec {
+	return types.VirtualMachineConfigSpec(*c)
+}
+func (c *configSpec) RemoveDisk(vm *mo.VirtualMachine) string {
+	var file string
+
+	for _, d := range vm.Config.Hardware.Device {
+		switch device := d.(type) {
+		case *types.VirtualDisk:
+			if file != "" {
+				panic("expected VM to have only one disk")
+			}
+
+			switch backing := device.Backing.(type) {
+			case *types.VirtualDiskFlatVer1BackingInfo:
+				file = backing.FileName
+			case *types.VirtualDiskFlatVer2BackingInfo:
+				file = backing.FileName
+			case *types.VirtualDiskSeSparseBackingInfo:
+				file = backing.FileName
+			case *types.VirtualDiskSparseVer1BackingInfo:
+				file = backing.FileName
+			case *types.VirtualDiskSparseVer2BackingInfo:
+				file = backing.FileName
+			default:
+				name := reflect.TypeOf(device.Backing).String()
+				panic(fmt.Sprintf("unexpected backing type: %s", name))
+			}
+
+			// Remove [datastore] prefix
+			m := dsPathRegexp.FindStringSubmatch(file)
+			if len(m) != 2 {
+				panic(fmt.Sprintf("expected regexp match for %#v", file))
+			}
+			file = m[1]
+
+			removeOp := &types.VirtualDeviceConfigSpec{
+				Operation: types.VirtualDeviceConfigSpecOperationRemove,
+				Device:    device,
+			}
+
+			c.AddChange(removeOp)
+		}
+	}
+
+	return file
+}
+func (cmd *vmdk) detachDisk(vm *object.VirtualMachine) (string, error) {
+	var mvm mo.VirtualMachine
+
+	pc := property.DefaultCollector(cmd.Client)
+	err := pc.RetrieveOne(context.TODO(), vm.Reference(), []string{"config.hardware"}, &mvm)
+	if err != nil {
+		return "", err
+	}
+
+	spec := new(configSpec)
+	dsFile := spec.RemoveDisk(&mvm)
+
+	task, err := vm.Reconfigure(context.TODO(), spec.ToSpec())
+	if err != nil {
+		return "", err
+	}
+
+	err = task.Wait(context.TODO())
+	if err != nil {
+		return "", err
+	}
+
+	return dsFile, nil
+}
+
+func ddisk(vm *object.VirtualMachine, client *vim25.Client) (string, error) {
+	var mvm mo.VirtualMachine
+
+	pc := property.DefaultCollector(client)
+	err := pc.RetrieveOne(context.TODO(), vm.Reference(), []string{"config.hardware"}, &mvm)
+	if err != nil {
+		return "", err
+	}
+
+	spec := new(configSpec)
+	dsFile := spec.RemoveDisk(&mvm)
+
+	task, err := vm.Reconfigure(context.TODO(), spec.ToSpec())
+	if err != nil {
+		return "", err
+	}
+
+	err = task.Wait(context.TODO())
+	if err != nil {
+		return "", err
+	}
+
+	return dsFile, nil
+}
 
 // GetEnvString returns string from environment variable.
 func GetEnvString(v string, def string) string {
@@ -64,14 +193,13 @@ func GetEnvBool(v string, def bool) bool {
 }
 
 const (
-	envURL         = "GOVMOMI_URL"
-	envUserName    = "GOVMOMI_USERNAME"
-	envPassword    = "GOVMOMI_PASSWORD"
-	envInsecure    = "GOVMOMI_INSECURE"
-	envDatacenter  = "VMDISK_DATACENTER"
-	envMachinelist = "VMDISK_MACHINELIST"
-	envTarget      = "VMDISK_TARGET"
-	envDisk        = "VMDISK_DISK"
+	envURL      = "GOVMOMI_URL"
+	envUserName = "GOVMOMI_USERNAME"
+	envPassword = "GOVMOMI_PASSWORD"
+	envInsecure = "GOVMOMI_INSECURE"
+	envBasepath = "VMDISK_BASEPATH"
+	envTarget   = "VMDISK_TARGET"
+	envDisk     = "VMDISK_DISK"
 )
 
 var urlDescription = fmt.Sprintf("ESX or vCenter URL [%s]", envURL)
@@ -178,9 +306,51 @@ func main() {
 	f := find.NewFinder(c.Client, true)
 	//listAllVM(f, ctx, "/datacenter0/vm")
 
-	vs := findAllObjectsOfType(f, ctx, "/", "VirtualMachine")
-	for _, v := range vs {
-		fmt.Printf("%s\n", v)
+	basepath := os.Getenv(envBasepath)
+	basepath = strings.TrimRight(basepath, "/")
+	if basepath == "" {
+		basepath = "/"
+	}
+	fmt.Printf("basepath=%s\n", basepath)
+
+	vmpaths := findAllObjectsOfType(f, ctx, basepath, "VirtualMachine")
+
+	for _, vmpath := range vmpaths {
+		fmt.Printf("%s\n", vmpath)
+		//vm, err := f.ManagedObjectList(ctx, vmpath)
+		vm, err := f.VirtualMachine(ctx, vmpath)
+		if err != nil {
+			exit(err)
+		}
+
+		vmdk, err := ddisk(vm, c.Client)
+		fmt.Printf("%+v\n", vmdk)
+		fmt.Printf("%+v\n", vm)
+		pc := property.DefaultCollector(c.Client)
+		var mvm mo.VirtualMachine
+		err = pc.RetrieveOne(ctx, vm.Reference(), []string{"config.hardware"}, &mvm)
+		spec := new(types.VirtualMachineConfigSpec)
+
+		fmt.Printf("%+v\n", mvm)
+		fmt.Printf("%+v\n", spec)
+
+		devices, err := vm.Device(ctx)
+
+		fmt.Printf("%+v\n", devices)
+
+		for _, device := range devices {
+			fmt.Printf("%+v\n", device.GetVirtualDevice().DeviceInfo)
+		}
+		/*
+			controller, err := devices.FindSCSIController("")
+			fmt.Printf("%+v\n", controller)
+		*/
+		//fmt.Printf("%+v\n", controllers)
+		/*
+			fmt.Println(reflect.TypeOf(vm))
+			o := vm.Value.(Object)
+		*/
+		break
 	}
 
 	//vms, err := f.VirtualMachine(ctx, "*")
