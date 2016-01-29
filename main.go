@@ -73,7 +73,7 @@ func (c *configSpec) AddChange(d types.BaseVirtualDeviceConfigSpec) {
 func (c *configSpec) ToSpec() types.VirtualMachineConfigSpec {
 	return types.VirtualMachineConfigSpec(*c)
 }
-func (c *configSpec) RemoveDisk(vm *mo.VirtualMachine) string {
+func (c *configSpec) RemoveDisk(vm *mo.VirtualMachine, diskfile string) string {
 	var file string
 
 	for _, d := range vm.Config.Hardware.Device {
@@ -98,7 +98,7 @@ func (c *configSpec) RemoveDisk(vm *mo.VirtualMachine) string {
 				name := reflect.TypeOf(device.Backing).String()
 				panic(fmt.Sprintf("unexpected backing type: %s", name))
 			}
-
+			fmt.Printf("%+v\n", file)
 			// Remove [datastore] prefix
 			m := dsPathRegexp.FindStringSubmatch(file)
 			if len(m) != 2 {
@@ -117,6 +117,8 @@ func (c *configSpec) RemoveDisk(vm *mo.VirtualMachine) string {
 
 	return file
 }
+
+/*
 func (cmd *vmdk) detachDisk(vm *object.VirtualMachine) (string, error) {
 	var mvm mo.VirtualMachine
 
@@ -141,8 +143,8 @@ func (cmd *vmdk) detachDisk(vm *object.VirtualMachine) (string, error) {
 
 	return dsFile, nil
 }
-
-func ddisk(vm *object.VirtualMachine, client *vim25.Client) (string, error) {
+*/
+func ddisk(vm *object.VirtualMachine, client *vim25.Client, diskfile string) (string, error) {
 	var mvm mo.VirtualMachine
 
 	pc := property.DefaultCollector(client)
@@ -152,7 +154,7 @@ func ddisk(vm *object.VirtualMachine, client *vim25.Client) (string, error) {
 	}
 
 	spec := new(configSpec)
-	dsFile := spec.RemoveDisk(&mvm)
+	dsFile := spec.RemoveDisk(&mvm, diskfile)
 
 	task, err := vm.Reconfigure(context.TODO(), spec.ToSpec())
 	if err != nil {
@@ -323,8 +325,8 @@ func main() {
 			exit(err)
 		}
 
-		vmdk, err := ddisk(vm, c.Client)
-		fmt.Printf("%+v\n", vmdk)
+		vmdk, err := ddisk(vm, c.Client, "[datastore1] scrap1/scrap1.vmdk")
+		fmt.Printf("this is the VMDK %+v\n", vmdk)
 		fmt.Printf("%+v\n", vm)
 		pc := property.DefaultCollector(c.Client)
 		var mvm mo.VirtualMachine
