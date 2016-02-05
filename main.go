@@ -207,14 +207,20 @@ func main() {
 	targetdc := dcNameRegexp.FindStringSubmatch(target)[1]
 	fmt.Printf("targetdc=%s\n", targetdc)
 
+	//based on the safe assumption that the target VM and the disk datastore are in the same DC, build a path
 	diskdatastorepath := "/" + targetdc + "/datastore/" + diskdatastore
 	fmt.Printf("diskdatastorepath=%s\n", diskdatastorepath)
 
-	//initialize the basepath to root if not specified
+	//targetds, err := f.Datastore(diskdatastorepath)
+	targetds, err := f.Datastore(ctx, diskdatastorepath)
+	fmt.Printf("targetds--> %+v\n", targetds)
+
+	//initialize the basepath to the target datacenter if not specified
 	basepath := os.Getenv(envBasepath)
 	basepath = strings.TrimRight(basepath, "/")
 	if basepath == "" {
-		basepath = "/"
+		//note: use the DC of the target machine if none specified - you can't mount disks between anyway
+		basepath = "/" + targetdc
 	}
 	fmt.Printf("basepath=%s\n", basepath)
 
@@ -232,4 +238,18 @@ func main() {
 
 	}
 
+	//targetvm
+	//targetds
+	//diskfilepath
+
+	vmdevices, err := targetvm.Device(ctx)
+
+	//note: Just find and use the first disk controller - this may require rethinking
+	diskcontroller, err := vmdevices.FindDiskController("")
+	fmt.Printf("diskcontroller--> %+v\n", diskcontroller)
+
+	vmdisk := vmdevices.CreateDisk(diskcontroller, targetds.Path(diskfilepath))
+	//backing := vmdisk.Backing.(*types.VirtualDiskFlatVer2BackingInfo)
+
+	targetvm.AddDevice(ctx, vmdisk)
 }
